@@ -1,100 +1,98 @@
 import streamlit as st
 from openai import OpenAI
-from dotenv import load_dotenv
-import os
 
-# Load environment variables
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Set Streamlit page config
-st.set_page_config(page_title="TalentScout Assistant", page_icon="🧠")
+api_key = st.secrets["OPENROUTER_API_KEY"]
+client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+
+st.set_page_config(page_title="TalentScout Hiring Assistant", page_icon="🧠", layout="centered")
 st.title("🧠 TalentScout Hiring Assistant")
 
-# Session state initialization
-if 'stage' not in st.session_state:
-    st.session_state.stage = 'greeting'
-if 'responses' not in st.session_state:
-    st.session_state.responses = {}
+if "step" not in st.session_state:
+    st.session_state.step = 0
+    st.session_state.user_data = {}
+    st.session_state.tech_questions = []
+    st.session_state.tech_answers = {}
+    st.session_state.conversation_over = False
 
-# Stage: Greeting
-if st.session_state.stage == 'greeting':
-    st.markdown("""
-    👋 Hello and welcome to **TalentScout**!
+questions = [
+    ("full_name", "What is your full name?"),
+    ("email", "What is your email address?"),
+    ("phone", "What is your phone number?"),
+    ("experience", "How many years of experience do you have?"),
+    ("position", "What position are you applying for?"),
+    ("location", "Where are you currently located?"),
+    ("tech_stack", "Please list your tech stack (e.g., Python, Django, MySQL, etc.)"),
+]
 
-    I’m your virtual hiring assistant here to help with your initial screening.
-    I’ll be asking you a few questions to get to know you better and then ask some technical questions based on your tech stack.
 
-    👉 Type **start** to begin or **exit** anytime to leave the conversation.
-    """)
-    user_input = st.text_input("Type here to continue:", key='start_input')
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+    st.session_state.messages.append({"role": "assistant", "content": "Hello! I'm the TalentScout Hiring Assistant. Let's get started with a few questions."})
+    st.session_state.messages.append({"role": "assistant", "content": questions[0][1]})
 
-    if user_input.lower() == 'start':
-        st.session_state.stage = 'collect_info'
-        st.rerun()
-    elif user_input.lower() in ['exit', 'quit', 'bye']:
-        st.success("Thank you for visiting TalentScout. Goodbye!")
-        st.stop()
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-# Stage: Candidate Info Collection
-elif st.session_state.stage == 'collect_info':
-    st.subheader("📋 Candidate Information")
-    with st.form("candidate_form"):
-        name = st.text_input("Full Name")
-        email = st.text_input("Email Address")
-        phone = st.text_input("Phone Number")
-        experience = st.number_input("Years of Experience", min_value=0, max_value=50, step=1)
-        position = st.text_input("Desired Position(s)")
-        location = st.text_input("Current Location")
-        tech_stack = st.text_area("Tech Stack (e.g. Python, Django, PostgreSQL)")
-
-        submitted = st.form_submit_button("Submit")
-
-    if submitted:
-        st.session_state.responses = {
-            "name": name,
-            "email": email,
-            "phone": phone,
-            "experience": experience,
-            "position": position,
-            "location": location,
-            "tech_stack": tech_stack
-        }
-        st.success("✅ Candidate information saved.")
-        st.session_state.stage = 'generate_questions'
-        st.rerun()
-
-# Stage: Generate GPT-based Questions
-elif st.session_state.stage == 'generate_questions':
-    st.subheader("🤖 Technical Questions Based on Your Tech Stack")
-
-    tech_stack = st.session_state.responses['tech_stack']
-    prompt = f"""
-You are a technical interviewer. The candidate has experience with the following tech stack:
-{tech_stack}
-
-Generate 3-5 technical interview questions that assess the candidate's proficiency in the listed technologies.
-Only return the questions without explanations.
-"""
+def generate_questions(tech_stack):
+    prompt = f"""You are a technical interviewer. Generate 3-5 concise technical interview questions for each of the following tech stack items provided by a candidate:\n\nTech Stack: {tech_stack}\n\nKeep questions relevant and beginner-to-intermediate level."""
 
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful technical interviewer."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=500,
+            model="openai/gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.7
         )
-
-        questions = response.choices[0].message.content
-        st.markdown("### Here are your technical questions:")
-        st.markdown(questions.replace("\n", "\n\n"))
-        st.success("✅ This concludes your initial screening. Our team will review and contact you soon.")
-
-        st.button("End Session", on_click=lambda: st.session_state.clear())
-
+        questions = response.choices[0].message.content.strip().split("\n")
+        st.session_state.tech_questions = [q.strip("•-1234567890. ") for q in questions if q.strip()]
+        st.session_state.step += 1  # Proceed to question asking phase
+        first_question = st.session_state.tech_questions[0]
+        st.session_state.messages.append({"role": "assistant", "content": f"Here is your first technical question:\n\n{first_question}"})
     except Exception as e:
-        st.error("⚠️ Failed to fetch questions. Please check your API key and internet connection.")
-        st.exception(e)
+        st.session_state.messages.append({"role": "assistant", "content": f"Error generating questions: {e}"})
+        st.session_state.conversation_over = True
+
+
+def handle_input(user_input):
+    st.session_state.messages.append({"role": "user", "content": user_input})
+
+    if user_input.lower() in ["exit", "quit", "bye", "done", "thank you"]:
+        st.session_state.messages.append({"role": "assistant", "content": "✅ Thank you for your time! We’ll review your responses and get back to you. Have a great day!"})
+        st.session_state.conversation_over = True
+        return
+
+    step = st.session_state.step
+
+
+    if step < len(questions):
+        key, _ = questions[step]
+        st.session_state.user_data[key] = user_input
+        st.session_state.step += 1
+
+        if st.session_state.step < len(questions):
+            next_q = questions[st.session_state.step][1]
+            st.session_state.messages.append({"role": "assistant", "content": next_q})
+        else:
+            st.session_state.messages.append({"role": "assistant", "content": "Thanks! Now generating technical questions..."})
+            generate_questions(st.session_state.user_data.get("tech_stack", ""))
+
+    else:
+        q_index = len(st.session_state.tech_answers)
+        st.session_state.tech_answers[q_index] = user_input
+
+        if q_index + 1 < len(st.session_state.tech_questions):
+            next_q = st.session_state.tech_questions[q_index + 1]
+            st.session_state.messages.append({"role": "assistant", "content": next_q})
+        else:
+            st.session_state.messages.append({"role": "assistant", "content": "✅ You've completed all technical questions! Type `exit` to finish."})
+            st.session_state.conversation_over = True
+
+
+if not st.session_state.conversation_over:
+    if prompt := st.chat_input("Type your answer here..."):
+        handle_input(prompt)
+        st.rerun()
+else:
+    st.success("🎉 Interview complete! Thank you for your responses.")
+    st.balloons()
